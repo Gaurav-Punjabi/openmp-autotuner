@@ -1,7 +1,0 @@
-❯ clang++ -shared -fPIC -o HelloPass.so HelloPass.cpp `llvm-config --cxxflags --ldflags --libs --system-libs`
-
-❯ opt -load-pass-plugin HelloPass.so -passes=hello -disable-output foo.ll
-
-❯ clang -c -S -emit-llvm parallel.c
-
-lli -load /usr/local/Cellar/llvm/18.1.5/lib/libomp.dylib parallel.bc
