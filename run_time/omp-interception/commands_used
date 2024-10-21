@@ -1,0 +1,19 @@
+# COMMANDS FOR GENERATING BITCODE USING LLVM
+clang -O3 -emit-llvm foobar.cpp -c -o foobar.bc
+./hello
+lli hello.bc # To execute using llvm and given bitcode
+
+# COMMANDS FOR GETTING GENERATED ASSEMBLY CODE
+llvm-dis < foobar.bc | less
+
+# FOR GENERATING NATIVE ASSEMBLY
+llc foobar.bc -o foobar.s
+gcc foobar.s -o foobar.native
+./foobar.native
+
+
+# COMMAND FOR COMPILING THE INTERCEPTOR
+clang++ -shared -fPIC -o fork_interceptor.so fork_interceptor.cpp -ldl
+
+# COMMAND FOR RUNNING PROGRAM WITH INTERCEPTOR
+LD_PRELOAD=interceptors/fork_interceptor.so ./foobar.o

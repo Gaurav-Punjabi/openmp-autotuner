@@ -1,0 +1,11 @@
+
+
+
+
+1. We want to consider LLVM compiler + LLVM-compatible OpenMP runtime library.
+--> Do the same approach: figure out the OpenMP parallel section symbol name that is used in LLVM copmiler + omp runtime lib.
+
+#2. In the LLVM compiler study (Keyword: LLVM optimization pass).
+
+# notes
+- extern "C" : when you call/refer C-implemented function in C++ program code.
