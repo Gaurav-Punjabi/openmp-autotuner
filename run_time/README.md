@@ -12,8 +12,8 @@ We utilize **Dynamic Library Interception** to monitor and intercept OpenMP API 
 
 For now, this runtime-based autotuning supports OpenMP applications compiled with the following toolchains:
 
-- **[GNU OpenMP (libgomp)](/openmp-autotuner/run_time/gomp-interception)**
-- **[LLVM Clang OpenMP (libomp)](/openmp-autotuner/run_time/omp-interception)**
+- **[GNU OpenMP (libgomp)](/run_time/gomp-interception)**
+- **[LLVM Clang OpenMP (libomp)](/run_time/omp-interception)**
 
 ### Why Use Runtime-Based Autotuning?
 
