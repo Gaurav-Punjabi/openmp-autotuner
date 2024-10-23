@@ -2,9 +2,12 @@
 #include <stdio.h>
 
 int main() {
+omp_set_num_threads(1);
+printf("\nThe thread count before interception is : %d", omp_get_num_threads());
 #pragma omp parallel
-  { printf("Hello, World from the thread\n"); }
-#pragma omp parallel
-  { printf("Hello, World from the thread\n"); }
+  { 
+	  printf("\nThe thread count after interception is : %d", omp_get_num_threads());
+	  printf("Hello, World from the thread\n"); 
+  }
   return 0;
 }
