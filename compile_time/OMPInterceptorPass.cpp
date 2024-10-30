@@ -9,6 +9,10 @@
 #include "llvm/IR/GlobalVariable.h" // Include for GlobalVariable
 #include "llvm/IR/Constants.h" // Include for Constant and ConstantDataArray
 #include <cstdarg>
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 #include <sstream>
 
 using namespace llvm;
@@ -80,46 +84,121 @@ void writeModuleToFile(Module &M, const std::string &filePath) {
 
 struct OMPInterceptorPass : llvm::PassInfoMixin<OMPInterceptorPass> {
     llvm::PreservedAnalyses run(llvm::Function &F, llvm::FunctionAnalysisManager &) {
-
+    Module *M = F.getParent();
    
-   llvm::errs() << "\n IR has been written to the path" << '\n';
-   llvm::errs() << "Function name: " << F.getName() << '\n';                   
-   llvm::errs() << "Arg size: " << F.arg_size() << '\n';
-   llvm::StringRef suffix("omp_outlined");
-   if (endsWith(F.getName(), suffix)) {
+    llvm::errs() << "\n IR has been written to the path" << '\n';
+    llvm::errs() << "Function name: " << F.getName() << '\n';                   
+    llvm::errs() << "Arg size: " << F.arg_size() << '\n';
+    llvm::StringRef suffix("omp_outlined");
+    if (endsWith(F.getName(), suffix)) {
       llvm::errs() << "Found out function outlined\n";
-      if(!is_autotuned) {
-        Module &M = *F.getParent();
-        string ir_file_path = "/WAVE/users2/unix/gpunjabi/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/parallel.ll";
-        writeModuleToFile(M, ir_file_path);
-        thread_count = get_thread_count(ir_file_path);
-        is_autotuned = true;
-      }
-      llvm::errs() << "The predicted thread count is " << thread_count << "\n";
-        
-      
-     // Insert code to print "Hello, world!"
-     llvm::LLVMContext &context = F.getContext();
-     llvm::IRBuilder<> builder(context);
+LLVMContext &Context = M->getContext();
+            std::unique_ptr<Module> NewModule = make_unique<Module>("extracted_module", Context);
+            ValueToValueMapTy VMap;
 
-// Create the call to omp_set_num_threads
-        // First, get or declare the omp_set_num_threads function
-        FunctionCallee ompSetNumThreadsFunc = F.getParent()->getOrInsertFunction(
-            "omp_set_num_threads", // Function name
-            Type::getVoidTy(context), // Return type
-            Type::getInt32Ty(context)  // Parameter types
-        );
+            // Copy global variables and constants
+            for (GlobalVariable &GV : M->globals()) {
+                if (GV.isConstant() || GV.hasExternalLinkage()) {
+                    GlobalVariable *NewGV = new GlobalVariable(
+                        *NewModule, GV.getValueType(), GV.isConstant(), GV.getLinkage(),
+                        GV.hasInitializer() ? GV.getInitializer() : nullptr, GV.getName());
+                    NewGV->copyAttributesFrom(&GV);
+                    VMap[&GV] = NewGV;
+                }
+            }
 
-        // Insert the call at the beginning of the function
-BasicBlock &entryBlock = F.getEntryBlock();
-            builder.SetInsertPoint(&entryBlock, entryBlock.getFirstInsertionPt());
-        // Create a Constant for thread count
-        Value *threadCountValue = ConstantInt::get(Type::getInt32Ty(context), thread_count);
+            // Copy function declarations and external functions
+            for (Function &Func : M->functions()) {
+                if (Func.isDeclaration() && Func.hasExternalLinkage() && !NewModule->getFunction(Func.getName())) {
+                    Function *NewFunc = Function::Create(
+                        Func.getFunctionType(), Func.getLinkage(), Func.getName(), NewModule.get());
+                    NewFunc->copyAttributesFrom(&Func);
+                    VMap[&Func] = NewFunc;
+                }
+            }
 
-        // Create the call
-        builder.CreateCall(ompSetNumThreadsFunc, {threadCountValue});
+            // Clone the function into the new module
+            Function *ClonedFunc = Function::Create(F.getFunctionType(), F.getLinkage(), F.getName(), NewModule.get());
+            ClonedFunc->copyAttributesFrom(&F);
+            ClonedFunc->setSubprogram(F.getSubprogram()); // Preserve debug info
+            SmallVector<ReturnInst*, 8> Returns;
+            CloneFunctionInto(ClonedFunc, &F, VMap, /*ModuleLevelChanges=*/true, Returns);
 
-   }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+           string filePath = "/WAVE/users2/unix/gpunjabi/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/parallel.ll";
+            writeModuleToFile(*NewModule, filePath); 
+    }
     return llvm::PreservedAnalyses::all();
   }
 

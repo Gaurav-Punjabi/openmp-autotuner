@@ -18,9 +18,7 @@ define dso_local i32 @main() #0 {
   call void @omp_set_num_threads(i32 1)
   %2 = call i32 @omp_get_num_threads()
   %3 = call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([46 x i8], [46 x i8]* @.str, i64 0, i64 0), i32 %2)
-    call void @omp_set_num_threads(i32 4)
   call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(%struct.ident_t* @0, i32 0, void (i32*, i32*, ...)* bitcast (void (i32*, i32*)* @.omp_outlined. to void (i32*, i32*, ...)*))
-
   ret i32 0
 }
 
@@ -32,7 +30,6 @@ declare dso_local i32 @omp_get_num_threads() #1
 
 ; Function Attrs: noinline norecurse nounwind optnone uwtable
 define internal void @.omp_outlined.(i32* noalias %0, i32* noalias %1) #2 {
-
   %3 = alloca i32*, align 8
   %4 = alloca i32*, align 8
   store i32* %0, i32** %3, align 8

@@ -15,14 +15,15 @@
 #include "llvm/IR/Function.h" // Include for llvm::Function
 #include "llvm/IR/GlobalVariable.h" // Include for GlobalVariable
 #include "llvm/IR/Constants.h" // Include for Constant and ConstantDataArray
+#include <chrono>
 #include <cstdarg>
 #include <sstream>
+#include <cmath>
 
 using namespace llvm;
 using namespace std;
 
 bool is_autotuned = false;
-int thread_count = 1;
 
 bool endsWith(const llvm::StringRef &str, const llvm::StringRef &suffix) {
   if (str.size() < suffix.size()) {
@@ -31,7 +32,17 @@ bool endsWith(const llvm::StringRef &str, const llvm::StringRef &suffix) {
   return str.find(suffix) != llvm::StringRef::npos;
 }
 
-int get_thread_count(const string& ir_file_name) {
+string generateUniqueFilename() {
+    // Get the current time since epoch in milliseconds
+    auto now = chrono::system_clock::now();
+    auto now_ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
+
+    // Construct a unique filename using just the timestamp
+    string filename = "IR_" + to_string(now_ms) + ".ll";
+    return filename;
+}
+
+int get_thread_count(const string& ir_file_name, const string& function_name) {
 
     auto inference_start_time = chrono::high_resolution_clock::now();
 
@@ -40,7 +51,7 @@ int get_thread_count(const string& ir_file_name) {
 
     // Command to execute the Python script with the file path as an argument
     char command[512];
-    snprintf(command, sizeof(command), "python %s %s", pythonScriptPath, ir_file_name.c_str());
+    snprintf(command, sizeof(command), "python %s %s %s", pythonScriptPath, ir_file_name.c_str(), function_name.c_str());
 
     // Open the process for reading the output
     FILE* fp = popen(command, "r");
@@ -55,6 +66,7 @@ int get_thread_count(const string& ir_file_name) {
 
     // Read the output of the Python script
     while (fgets(buffer, sizeof(buffer), fp) != NULL) {
+      printf("\n%s", buffer);
         // Assuming the thread number is printed as the last output from the Python script
         sscanf(buffer, "%d", &num_threads);
     }
@@ -65,7 +77,7 @@ int get_thread_count(const string& ir_file_name) {
     auto inference_end_time = chrono::high_resolution_clock::now();
     chrono::duration<double, milli> elapsed = inference_end_time - inference_start_time;
 
-    llvm::errs() << "\nTime taken by inference : " << elapsed.count() << "ms";
+    llvm::errs() << "\nTime taken by inference : " << elapsed.count() << "s";
 
     return num_threads != -1 ? num_threads : 1;
 }
@@ -87,20 +99,20 @@ void writeModuleToFile(Module &M, const std::string &filePath) {
 
 struct OMPInterceptorPass : llvm::PassInfoMixin<OMPInterceptorPass> {
     llvm::PreservedAnalyses run(llvm::Function &F, llvm::FunctionAnalysisManager &) {
+      bool foundForkCall = false;  // Track if __kmpc_fork_call was found
 
-   
+        // Start the timer
+        auto startTime = std::chrono::high_resolution_clock::now();
    llvm::errs() << "\n IR has been written to the path" << '\n';
    llvm::errs() << "Function name: " << F.getName() << '\n';                   
    llvm::errs() << "Arg size: " << F.arg_size() << '\n';
    llvm::StringRef suffix("omp_outlined");
-      if(!is_autotuned) {
+    if(!is_autotuned) {
         Module &M = *F.getParent();
         string ir_file_path = "/WAVE/users2/unix/gpunjabi/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/parallel.ll";
         writeModuleToFile(M, ir_file_path);
-        thread_count = get_thread_count(ir_file_path);
         is_autotuned = true;
-      }
-      llvm::errs() << "The predicted thread count is " << thread_count << "\n";
+    } 
 LLVMContext &context = F.getContext();
         IRBuilder<> builder(context);
 
@@ -110,23 +122,49 @@ LLVMContext &context = F.getContext();
                 if (auto *callInst = dyn_cast<CallInst>(&I)) {
                     Function *calledFunc = callInst->getCalledFunction();
                     if (calledFunc && calledFunc->getName() == "__kmpc_fork_call") {
-                        // Create the call to OMP_set_num_threads
-                        FunctionCallee ompSetNumThreadsFunc = F.getParent()->getOrInsertFunction(
-                            "omp_set_num_threads", 
-                            Type::getVoidTy(context), 
-                            Type::getInt32Ty(context)  // Assuming it takes an int parameter
-                        );
+                            string filePath = "/WAVE/users2/unix/gpunjabi/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/parallel.ll";
+                            if (callInst->getNumArgOperands() >= 3) {
+                                Value *microtask = callInst->getArgOperand(2);
+// Strip pointer casts to get the underlying function
+                                if (Function *outlinedFunc = dyn_cast<Function>(microtask->stripPointerCasts())) {
+                                    // Print the name of the outlined function
+                                    errs() << "Intercepted: "
+                                           << outlinedFunc->getName() << "\n";
+                                    int thread_count = get_thread_count(filePath, outlinedFunc->getName());
+                                    errs() << "\nPredicted thread count is : " << thread_count << "\n";                
+                                    // Create the call to OMP_set_num_threads
+                            FunctionCallee ompSetNumThreadsFunc = F.getParent()->getOrInsertFunction(
+                              "omp_set_num_threads", 
+                              Type::getVoidTy(context), 
+                              Type::getInt32Ty(context)  // Assuming it takes an int parameter
+                            );
 
-                        // Insert the call before kmpc_fork_call
-                        builder.SetInsertPoint(callInst);
-                        builder.CreateCall(ompSetNumThreadsFunc, {builder.getInt32(thread_count)});
+                            // Insert the call before kmpc_fork_call
+                            builder.SetInsertPoint(callInst);
+                            builder.CreateCall(ompSetNumThreadsFunc, {builder.getInt32(thread_count)});
 
-                        // Now callInst points to kmpc_fork_call, continue as necessary
-                    }
+                                }
+                            }
+                                                       }
                 }
             }
         }
-    return llvm::PreservedAnalyses::all();
+        // Stop the timer
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto elapsedTime = std::chrono::duration<double>(endTime - startTime).count();
+    
+// Round to 6 decimal places
+        elapsedTime = std::round(elapsedTime * 1e3) / 1e3;
+
+        // Print total time taken if a kmpc_fork_call was found
+        if (foundForkCall) {
+            llvm::errs() << "Total time taken in the pass for function " << F.getName() 
+                         << ": " << elapsedTime << " seconds\n";
+        }
+
+
+        return llvm::PreservedAnalyses::all();
+
   }
 
   static bool isRequired() { return true; }
