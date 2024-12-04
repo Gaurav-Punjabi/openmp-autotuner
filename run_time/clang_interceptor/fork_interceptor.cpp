@@ -2,6 +2,10 @@
 
 #include <dlfcn.h>
 #include <iostream>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+#include <stdio.h>
 #include <cstdarg>
 #include <fstream>
 #include <sstream>
@@ -13,6 +17,86 @@
 #include "fork_interceptor.h"
 
 using namespace std;
+
+
+#define BUFFER_SIZE 128
+
+// Function to escape shell arguments
+void escapeShellArgument(const char* arg, char* escaped) {
+    size_t i = 0, j = 0;
+    while (arg[i] != '\0') {
+        char c = arg[i];
+        // Escape special shell characters
+        if (c == '"' || c == '\'' || c == '\\' || c == ';' || c == '&' || c == '|') {
+            escaped[j++] = '\\';  // Escape the special character
+        }
+        escaped[j++] = c;  // Add the character to the result
+        i++;
+    }
+    escaped[j] = '\0';  // Null-terminate the string
+}
+
+// Function to get the thread count by invoking the Python script
+int get_thread_count(const char *ir_file_content) {
+    clock_t inference_start_time = clock();  // Start the timer
+
+    // Dynamically allocate memory for the escaped content
+    size_t escaped_content_len = strlen(ir_file_content) * 2 + 1;  // Max space needed for escape
+    char* escaped_content = (char*)malloc(escaped_content_len);
+    if (!escaped_content) {
+        fprintf(stderr, "Memory allocation failed for escaped_content.\n");
+        return -1;
+    }
+
+    escapeShellArgument(ir_file_content, escaped_content);
+
+    // Dynamically allocate memory for the command string
+    size_t command_len = strlen(escaped_content) + 128 + 1;  // 128 for Python script path and other parts
+    char* command = (char*)malloc(command_len);
+    if (!command) {
+        free(escaped_content);
+        perror("Memory allocation failed for command.\n");
+        return -1;
+    }
+    snprintf(command, command_len, "python /WAVE/projects2/ycho_lab/gpunjabi/autotuning/model/svm/svm_inference.py \"%s\"", escaped_content);
+
+    // Open a pipe to the Python script
+    FILE *fp = popen(command, "r");
+    free(escaped_content);  // Free escaped_content after use
+    free(command);          // Free command after use
+
+    if (!fp) {
+        perror("Failed to open pipe for Python script.\n");
+        return -1; // Return an error value if the script fails
+    }
+
+    // Buffer to store the output from the Python script
+    char buffer[BUFFER_SIZE];
+    int num_threads = -1;
+
+    // Read the output of the Python script
+    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
+        printf("\nBUFFER: %s", buffer);
+        // Assuming the thread number is printed as the last output from the Python script
+        sscanf(buffer, "%d", &num_threads);
+    }
+
+    // Close the process
+    int status = pclose(fp);
+    if (status == -1) {
+        fprintf(stderr, "Failed to close pipe.\n");
+    }
+
+    // Calculate elapsed time
+    clock_t inference_end_time = clock();
+    double elapsed_time = ((double)(inference_end_time - inference_start_time)) / CLOCKS_PER_SEC * 1000.0;  // Convert to milliseconds
+
+    fprintf(stderr, "\nTime taken by inference: %.2f ms\n", elapsed_time);
+
+    // Return the number of threads or default to 4 if parsing fails
+    return num_threads != -1 ? num_threads : 4;
+}
+
 
 void initialize_openmp_runtime() {
     // Force OpenMP to initialize
@@ -70,44 +154,6 @@ void read_and_print_ir(const string& ir_filename) {
     ir_file.close();
 }
 
-int get_thread_count(const string& ir_file_name, const string& function_name) {
-
-    auto inference_start_time = chrono::high_resolution_clock::now();
-
-    // Path to the Python script
-    const char* pythonScriptPath = "/WAVE/projects2/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/model_inference.py";
-
-    // Command to execute the Python script with the file path as an argument
-    char command[512];
-    snprintf(command, sizeof(command), "python %s %s %s", pythonScriptPath, ir_file_name.c_str(), function_name.c_str());
-
-    // Open the process for reading the output
-    FILE* fp = popen(command, "r");
-    if (fp == NULL) {
-        fprintf(stderr, "Failed to run Python script\n");
-        return 1;
-    }
-
-    // Buffer to store the output from the Python script
-    char buffer[128];
-    int num_threads = -1;
-
-    // Read the output of the Python script
-    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-        // Assuming the thread number is printed as the last output from the Python script
-        sscanf(buffer, "%d", &num_threads);
-    }
-
-    // Close the process
-    pclose(fp);
-
-    auto inference_end_time = chrono::high_resolution_clock::now();
-    chrono::duration<double, milli> elapsed = inference_end_time - inference_start_time;
-
-    cout << "\nTime taken by inference : " << elapsed.count() << "ms";
-
-    return num_threads != -1 ? num_threads : 1;
-}
 // Define the function pointer type for GOMP_parallel_start
 typedef void (*kmpc_fork_call_ptr)(void *, int, void *);
 
@@ -121,13 +167,9 @@ void __kmpc_fork_call(void *loc, int gtid, void *microtask) {
     string executable_path = get_executable_path();
     cout << "Executable name : " << executable_path << "\n";
 
-
-    string function_name = call_llvm_symbolizer(executable_path, microtask);
-    cout << "Function  Name : " << function_name << "\n";
-
  // Read and print the IR file (assumes IR file is named after the executable)
 string executable_name = executable_path + ".ll";
-int thread_count = get_thread_count(executable_name, function_name);
+int thread_count = get_thread_count(const_cast<char*>(executable_name.c_str()));
 
 //omp_set_num_threads(thread_count);
 cout <<  "\nThe thread count has been set to : " << thread_count << "\n";

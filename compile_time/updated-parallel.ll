@@ -10,6 +10,7 @@ target triple = "x86_64-unknown-linux-gnu"
 @.str.2 = private unnamed_addr constant [30 x i8] c"Hello, World from the thread\0A\00", align 1
 @.str.3 = private unnamed_addr constant [23 x i8] c";unknown;unknown;0;0;;\00", align 1
 @0 = private unnamed_addr global %struct.ident_t { i32 0, i32 2, i32 0, i32 0, i8* getelementptr inbounds ([23 x i8], [23 x i8]* @.str.3, i32 0, i32 0) }, align 8
+@main_ir = private constant [445 x i8] c"{\0A  \22directed\22: true,\0A  \22graph\22: {\0A    \22function\22: [],\0A    \22module\22: [\0A      {\0A        \22features\22: {\0A          \22llvm_data_layout\22: [\0A            \22\22\0A          ],\0A          \22llvm_target_triple\22: [\0A            \22\22\0A          ]\0A        },\0A        \22name\22: \22<stdin>\22\0A      }\0A    ]\0A  },\0A  \22links\22: [],\0A  \22multigraph\22: true,\0A  \22nodes\22: [\0A    {\0A      \22block\22: 0,\0A      \22function\22: 0,\0A      \22id\22: 0,\0A      \22text\22: \22[external]\22,\0A      \22type\22: 0\0A    }\0A  ]\0A}\0A\00"
 
 ; Function Attrs: noinline nounwind optnone uwtable
 define dso_local i32 @main() #0 {
@@ -18,7 +19,8 @@ define dso_local i32 @main() #0 {
   call void @omp_set_num_threads(i32 1)
   %2 = call i32 @omp_get_num_threads()
   %3 = call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([46 x i8], [46 x i8]* @.str, i64 0, i64 0), i32 %2)
-  call void @omp_set_num_threads(i32 4)
+  %4 = call i32 @get_thread_count(i8* getelementptr inbounds ([445 x i8], [445 x i8]* @main_ir, i32 0, i32 0))
+  call void @omp_set_num_threads(i32 %4)
   call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(%struct.ident_t* @0, i32 0, void (i32*, i32*, ...)* bitcast (void (i32*, i32*)* @.omp_outlined. to void (i32*, i32*, ...)*))
   ret i32 0
 }
@@ -42,6 +44,8 @@ define internal void @.omp_outlined.(i32* noalias %0, i32* noalias %1) #2 {
 }
 
 declare !callback !2 dso_local void @__kmpc_fork_call(%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...)
+
+declare i32 @get_thread_count(i8*)
 
 attributes #0 = { noinline nounwind optnone uwtable "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "min-legal-vector-width"="0" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
 attributes #1 = { "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }

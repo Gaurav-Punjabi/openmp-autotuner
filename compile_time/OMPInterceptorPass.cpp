@@ -1,3 +1,10 @@
+//===-- HelloWorld.cpp - Example Transformations --------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
@@ -8,19 +15,56 @@
 #include "llvm/IR/Function.h" // Include for llvm::Function
 #include "llvm/IR/GlobalVariable.h" // Include for GlobalVariable
 #include "llvm/IR/Constants.h" // Include for Constant and ConstantDataArray
+#include <chrono>
 #include <cstdarg>
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/Metadata.h"
-#include "llvm/Transforms/Utils/Cloning.h"
-#include "llvm/Transforms/Utils/ValueMapper.h"
 #include <sstream>
+#include <cmath>
+#include <iomanip>
 
 using namespace llvm;
 using namespace std;
 
 bool is_autotuned = false;
-int thread_count = 1;
+std::string escapeShellArgument(const std::string& arg) {
+    std::ostringstream escaped;
+    for (char c : arg) {
+        // Escape special shell characters
+        if (c == '"' || c == '\'' || c == '\\' || c == ';' || c == '&' || c == '|') {
+            escaped << '\\';
+        }
+        escaped << c;
+    }
+    return escaped.str();
+}
 
+std::string escapeJsonString(const std::string& input) {
+    std::ostringstream escaped;
+    for (char c : input) {
+        switch (c) {
+            case '"':  // Escape double quotes
+                escaped << "\\\"";
+                break;
+            case '\\':  // Escape backslashes
+                escaped << "\\\\";
+                break;
+            case '$':  // Escape dollar signs
+                escaped << "\\$";
+                break;
+            case '`':  // Escape backticks
+                escaped << "\\`";
+                break;
+            case '\n':  // Escape newlines
+                escaped << "\\n";
+                break;
+            case '\t':  // Escape tabs
+                escaped << "\\t";
+                break;
+            default:
+                escaped << c;
+        }
+    }
+    return escaped.str();
+}
 bool endsWith(const llvm::StringRef &str, const llvm::StringRef &suffix) {
   if (str.size() < suffix.size()) {
     return false;
@@ -28,178 +72,166 @@ bool endsWith(const llvm::StringRef &str, const llvm::StringRef &suffix) {
   return str.find(suffix) != llvm::StringRef::npos;
 }
 
-int get_thread_count(const string& ir_file_name) {
+string generateUniqueFilename() {
+    // Get the current time since epoch in milliseconds
+    auto now = chrono::system_clock::now();
+    auto now_ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
+
+    // Construct a unique filename using just the timestamp
+    string filename = "IR_" + to_string(now_ms) + ".ll";
+    return filename;
+}
+
+
+string convert_ir_to_graph(const string& ir_file_content, const string& function_name) {
+
+    string ir_graph;
+    int buffer_size = 128;
+    char buffer[buffer_size];
 
     auto inference_start_time = chrono::high_resolution_clock::now();
 
-    // Path to the Python script
-    const char* pythonScriptPath = "/WAVE/projects2/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/model_inference.py";
+    std::ostringstream command;
+    command << "python /WAVE/projects2/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/convert_to_json.py "
+            << "\"" << function_name << "\" "
+            << "\"" << escapeShellArgument(ir_file_content) << "\"";
 
-    // Command to execute the Python script with the file path as an argument
-    char command[512];
-    snprintf(command, sizeof(command), "python %s %s", pythonScriptPath, ir_file_name.c_str());
-
-    // Open the process for reading the output
-    FILE* fp = popen(command, "r");
-    if (fp == NULL) {
-        fprintf(stderr, "Failed to run Python script\n");
-        return 1;
+    // Open a pipe to the process
+    FILE* fp = popen(command.str().c_str(), "r");
+    if (!fp) {
+        errs() << "Failed to open pipe for Python script." << '\n';
+        return ir_graph;
     }
 
-    // Buffer to store the output from the Python script
-    char buffer[128];
-    int num_threads = -1;
 
-    // Read the output of the Python script
-    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-        // Assuming the thread number is printed as the last output from the Python script
-        sscanf(buffer, "%d", &num_threads);
+    while(fgets(buffer, buffer_size, fp) != nullptr) {
+      ir_graph += buffer;
     }
+
 
     // Close the process
     pclose(fp);
 
-    auto inference_end_time = chrono::high_resolution_clock::now();
-    chrono::duration<double, milli> elapsed = inference_end_time - inference_start_time;
-
-    llvm::errs() << "\nTime taken by inference : " << elapsed.count() << "ms";
-
-    return num_threads != -1 ? num_threads : 1;
-}
-
-void writeModuleToFile(Module &M, const std::string &filePath) {
-    // Create an output file stream
-    std::error_code EC;
-    std::unique_ptr<raw_fd_ostream> fileStream = 
-        std::make_unique<raw_fd_ostream>(filePath, EC, sys::fs::F_None);
-
-    if (EC) {
-        errs() << "Error opening file: " << EC.message() << "\n";
-        return;
-    }
-
-    // Write the IR to the file
-    M.print(*fileStream, nullptr); // Print the module IR
+    return ir_graph;
 }
 
 struct OMPInterceptorPass : llvm::PassInfoMixin<OMPInterceptorPass> {
     llvm::PreservedAnalyses run(llvm::Function &F, llvm::FunctionAnalysisManager &) {
-    Module *M = F.getParent();
+ 
+        Module &M = *F.getParent();
+        LLVMContext &Context = M.getContext();
+
+        bool foundForkCall = false;  // Track if __kmpc_fork_call was found
+// Assuming you have a Builder and context
+// Start the timer
+        auto startTime = std::chrono::high_resolution_clock::now();
+        llvm::errs() << "\n IR has been written to the path" << '\n';
+        llvm::errs() << "Function name: " << F.getName() << '\n';                   
+        llvm::errs() << "Arg size: " << F.arg_size() << '\n';
+        llvm::StringRef suffix("omp_outlined");
+    // if(!is_autotuned) {
+    //     Module &M = *F.getParent();
+    //     string irString;
+    //     raw_string_ostream irStream(irString);
+    //     M.print(irStream, NULL);
+    //     string irGraph = convert_ir_to_graph(irString, F.getName());
+    //     errs() << "\nIR GRAPH : " << irGraph << '\n';
+    //     is_autotuned = true;
+    // } 
+        LLVMContext &context = F.getContext();
+        IRBuilder<> builder(context);
+       IRBuilder<> globalBuilder(F.getParent()->getContext());
+
+
+
+        // Find the kmpc_fork_call
+        for (BasicBlock &BB : F) {
+            for (Instruction &I : BB) {
+                if (auto *callInst = dyn_cast<CallInst>(&I)) {
+                    Function *calledFunc = callInst->getCalledFunction();
+                    if (calledFunc && calledFunc->getName() == "__kmpc_fork_call") {
+                            string filePath = "/WAVE/users2/unix/gpunjabi/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/parallel.ll";
+                            if (callInst->getNumArgOperands() >= 3) {
+                                Value *microtask = callInst->getArgOperand(2);
+// Strip pointer casts to get the underlying function
+                                if (Function *outlinedFunc = dyn_cast<Function>(microtask->stripPointerCasts())) {
+                                    // Print the name of the outlined function
+                                    errs() << "Intercepted: "
+                                           << outlinedFunc->getName() << "\n";
+                                    Module &M = *F.getParent();
+                                    string irString;
+                                    raw_string_ostream irStream(irString);
+                                    M.print(irStream, NULL);
+                                    string irGraph = convert_ir_to_graph(irString, F.getName());
+                                    errs() << "Got the IR GRAPH" << '\n';
+
+                                    LLVMContext &Context = M.getContext();
+  string ir_string_name = F.getName().str() + "_ir";
+        // Create the global string
+        ArrayType *ArrayTy = ArrayType::get(Type::getInt8Ty(Context), irGraph.size() + 1); // Null-terminated
+        Constant *StringConst = ConstantDataArray::getString(Context, irGraph, true);
+
+        // Create the global variable to store the string
+        GlobalVariable *GlobalStr = new GlobalVariable(
+            M,                   // Module
+            ArrayTy,             // Type
+            true,                // Constant
+            GlobalValue::PrivateLinkage, // Linkage type
+            StringConst,         // Initial value
+            ir_string_name               // Name of the global variable
+        );
+
+                                    // int thread_count = 1;
+                                     // Create global string
+                                    // Step 1: Declare the external function `get_thread_count`
+                                     FunctionType *getThreadCountType = FunctionType::get(
+                                      Type::getInt32Ty(context),      // Return type: int
+                                      {Type::getInt8PtrTy(context)}, // Parameter: const char* (file content)
+                                      false                          // Not variadic
+                                     );
+
+                                      FunctionCallee getThreadCountFunc = F.getParent()->getOrInsertFunction(
+                                       "get_thread_count", getThreadCountType);
+
+                                    
+
    
-    llvm::errs() << "\n IR has been written to the path" << '\n';
-    llvm::errs() << "Function name: " << F.getName() << '\n';                   
-    llvm::errs() << "Arg size: " << F.arg_size() << '\n';
-    llvm::StringRef suffix("omp_outlined");
-    if (endsWith(F.getName(), suffix)) {
-      llvm::errs() << "Found out function outlined\n";
-LLVMContext &Context = M->getContext();
-            std::unique_ptr<Module> NewModule = make_unique<Module>("extracted_module", Context);
-            ValueToValueMapTy VMap;
+                                      builder.SetInsertPoint(callInst);
+                                      Value *ptr = builder.CreatePointerCast(GlobalStr, Type::getInt8PtrTy(Context));
+                                      Value *threadCount = builder.CreateCall(getThreadCountFunc, {ptr});
+                                    // Create the call to OMP_set_num_threads
+                                    FunctionCallee ompSetNumThreadsFunc = F.getParent()->getOrInsertFunction(
+                                        "omp_set_num_threads", 
+                                        Type::getVoidTy(context), 
+                                        Type::getInt32Ty(context)  // Assuming it takes an int parameter
+                                    );
 
-            // Copy global variables and constants
-            for (GlobalVariable &GV : M->globals()) {
-                if (GV.isConstant() || GV.hasExternalLinkage()) {
-                    GlobalVariable *NewGV = new GlobalVariable(
-                        *NewModule, GV.getValueType(), GV.isConstant(), GV.getLinkage(),
-                        GV.hasInitializer() ? GV.getInitializer() : nullptr, GV.getName());
-                    NewGV->copyAttributesFrom(&GV);
-                    VMap[&GV] = NewGV;
+                            // Insert the call before kmpc_fork_call
+                            builder.SetInsertPoint(callInst);
+                            builder.CreateCall(ompSetNumThreadsFunc, {threadCount});
+
+                                }
+                            }
+                                                       }
                 }
             }
+        }
+        // Stop the timer
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto elapsedTime = std::chrono::duration<double>(endTime - startTime).count();
+    
+// Round to 6 decimal places
+        elapsedTime = std::round(elapsedTime * 1e3) / 1e3;
+
+        // Print total time taken if a kmpc_fork_call was found
+        if (foundForkCall) {
+            llvm::errs() << "Total time taken in the pass for function " << F.getName() 
+                         << ": " << elapsedTime << " seconds\n";
+        }
+
+
+        return llvm::PreservedAnalyses::all();
 
-            // Copy function declarations and external functions
-            for (Function &Func : M->functions()) {
-                if (Func.isDeclaration() && Func.hasExternalLinkage() && !NewModule->getFunction(Func.getName())) {
-                    Function *NewFunc = Function::Create(
-                        Func.getFunctionType(), Func.getLinkage(), Func.getName(), NewModule.get());
-                    NewFunc->copyAttributesFrom(&Func);
-                    VMap[&Func] = NewFunc;
-                }
-            }
-
-            // Clone the function into the new module
-            Function *ClonedFunc = Function::Create(F.getFunctionType(), F.getLinkage(), F.getName(), NewModule.get());
-            ClonedFunc->copyAttributesFrom(&F);
-            ClonedFunc->setSubprogram(F.getSubprogram()); // Preserve debug info
-            SmallVector<ReturnInst*, 8> Returns;
-            CloneFunctionInto(ClonedFunc, &F, VMap, /*ModuleLevelChanges=*/true, Returns);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-           string filePath = "/WAVE/users2/unix/gpunjabi/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/parallel.ll";
-            writeModuleToFile(*NewModule, filePath); 
-    }
-    return llvm::PreservedAnalyses::all();
   }
 
   static bool isRequired() { return true; }

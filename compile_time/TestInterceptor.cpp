@@ -19,12 +19,52 @@
 #include <cstdarg>
 #include <sstream>
 #include <cmath>
+#include <iomanip>
 
 using namespace llvm;
 using namespace std;
 
 bool is_autotuned = false;
+std::string escapeShellArgument(const std::string& arg) {
+    std::ostringstream escaped;
+    for (char c : arg) {
+        // Escape special shell characters
+        if (c == '"' || c == '\'' || c == '\\' || c == ';' || c == '&' || c == '|') {
+            escaped << '\\';
+        }
+        escaped << c;
+    }
+    return escaped.str();
+}
 
+std::string escapeJsonString(const std::string& input) {
+    std::ostringstream escaped;
+    for (char c : input) {
+        switch (c) {
+            case '"':  // Escape double quotes
+                escaped << "\\\"";
+                break;
+            case '\\':  // Escape backslashes
+                escaped << "\\\\";
+                break;
+            case '$':  // Escape dollar signs
+                escaped << "\\$";
+                break;
+            case '`':  // Escape backticks
+                escaped << "\\`";
+                break;
+            case '\n':  // Escape newlines
+                escaped << "\\n";
+                break;
+            case '\t':  // Escape tabs
+                escaped << "\\t";
+                break;
+            default:
+                escaped << c;
+        }
+    }
+    return escaped.str();
+}
 bool endsWith(const llvm::StringRef &str, const llvm::StringRef &suffix) {
   if (str.size() < suffix.size()) {
     return false;
@@ -42,23 +82,56 @@ string generateUniqueFilename() {
     return filename;
 }
 
-int get_thread_count(const string& ir_file_name, const string& function_name) {
+
+string convert_ir_to_graph(const string& ir_file_content, const string& function_name) {
+
+    string ir_graph;
+    int buffer_size = 128;
+    char buffer[buffer_size];
+
+    auto inference_start_time = chrono::high_resolution_clock::now();
+
+    std::ostringstream command;
+    command << "python /WAVE/projects2/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/convert_to_json.py "
+            << "\"" << function_name << "\" "
+            << "\"" << escapeShellArgument(ir_file_content) << "\"";
+
+    // Open a pipe to the process
+    FILE* fp = popen(command.str().c_str(), "r");
+    if (!fp) {
+        errs() << "Failed to open pipe for Python script." << '\n';
+        return ir_graph;
+    }
+
+
+    while(fgets(buffer, buffer_size, fp) != nullptr) {
+      ir_graph += buffer;
+    }
+
+
+    // Close the process
+    pclose(fp);
+
+    return ir_graph;
+}
+
+int get_thread_count(const string& ir_file_content) {
 
     auto inference_start_time = chrono::high_resolution_clock::now();
 
     // Path to the Python script
-    const char* pythonScriptPath = "/WAVE/projects2/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/model_inference.py";
+    std::ostringstream command;
+    command << "python /WAVE/projects2/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/model_inference.py ";
 
-    // Command to execute the Python script with the file path as an argument
-    char command[512];
-    snprintf(command, sizeof(command), "python %s %s %s", pythonScriptPath, ir_file_name.c_str(), function_name.c_str());
-
-    // Open the process for reading the output
-    FILE* fp = popen(command, "r");
-    if (fp == NULL) {
-        fprintf(stderr, "Failed to run Python script\n");
+    // Open a pipe to the process
+    FILE* fp = popen(command.str().c_str(), "w");
+    if (!fp) {
+        errs() << "Failed to open pipe for Python script." << '\n';
         return 1;
     }
+
+    // Write JSON string to the Python script's stdin
+    fwrite(ir_file_content.c_str(), 1, ir_file_content.size(), fp);
 
     // Buffer to store the output from the Python script
     char buffer[128];
@@ -66,7 +139,7 @@ int get_thread_count(const string& ir_file_name, const string& function_name) {
 
     // Read the output of the Python script
     while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-      printf("\n%s", buffer);
+        errs() << "\nBUFFER: " << buffer;
         // Assuming the thread number is printed as the last output from the Python script
         sscanf(buffer, "%d", &num_threads);
     }
@@ -99,21 +172,25 @@ void writeModuleToFile(Module &M, const std::string &filePath) {
 
 struct OMPInterceptorPass : llvm::PassInfoMixin<OMPInterceptorPass> {
     llvm::PreservedAnalyses run(llvm::Function &F, llvm::FunctionAnalysisManager &) {
+
       bool foundForkCall = false;  // Track if __kmpc_fork_call was found
 
         // Start the timer
         auto startTime = std::chrono::high_resolution_clock::now();
-   llvm::errs() << "\n IR has been written to the path" << '\n';
-   llvm::errs() << "Function name: " << F.getName() << '\n';                   
-   llvm::errs() << "Arg size: " << F.arg_size() << '\n';
-   llvm::StringRef suffix("omp_outlined");
-    if(!is_autotuned) {
-        Module &M = *F.getParent();
-        string ir_file_path = "/WAVE/users2/unix/gpunjabi/ycho_lab/gpunjabi/autotuning/model/gnn/gnn_nb_threads/parallel.ll";
-        writeModuleToFile(M, ir_file_path);
-        is_autotuned = true;
-    } 
-LLVMContext &context = F.getContext();
+        llvm::errs() << "\n IR has been written to the path" << '\n';
+        llvm::errs() << "Function name: " << F.getName() << '\n';                   
+        llvm::errs() << "Arg size: " << F.arg_size() << '\n';
+        llvm::StringRef suffix("omp_outlined");
+    // if(!is_autotuned) {
+    //     Module &M = *F.getParent();
+    //     string irString;
+    //     raw_string_ostream irStream(irString);
+    //     M.print(irStream, NULL);
+    //     string irGraph = convert_ir_to_graph(irString, F.getName());
+    //     errs() << "\nIR GRAPH : " << irGraph << '\n';
+    //     is_autotuned = true;
+    // } 
+        LLVMContext &context = F.getContext();
         IRBuilder<> builder(context);
 
         // Find the kmpc_fork_call
@@ -130,7 +207,15 @@ LLVMContext &context = F.getContext();
                                     // Print the name of the outlined function
                                     errs() << "Intercepted: "
                                            << outlinedFunc->getName() << "\n";
-                                    int thread_count = get_thread_count(filePath, outlinedFunc->getName());
+                                    Module &M = *F.getParent();
+                                    string irString;
+                                    raw_string_ostream irStream(irString);
+                                    M.print(irStream, NULL);
+                                    string irGraph = convert_ir_to_graph(irString, F.getName());
+                                    errs() << "Got the IR GRAPH" << '\n';
+
+                                    // int thread_count = 1;
+                                    int thread_count = get_thread_count(irGraph);
                                     errs() << "\nPredicted thread count is : " << thread_count << "\n";                
                                     // Create the call to OMP_set_num_threads
                             FunctionCallee ompSetNumThreadsFunc = F.getParent()->getOrInsertFunction(
@@ -141,7 +226,7 @@ LLVMContext &context = F.getContext();
 
                             // Insert the call before kmpc_fork_call
                             builder.SetInsertPoint(callInst);
-                            builder.CreateCall(ompSetNumThreadsFunc, {builder.getInt32(thread_count)});
+                            builder.CreateCall(ompSetNumThreadsFunc, {builder.getInt32(4)});
 
                                 }
                             }
